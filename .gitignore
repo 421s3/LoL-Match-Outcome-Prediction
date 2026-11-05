@@ -1,3 +1,10 @@
+data/*.csv
+.Rproj.user/
+.Rhistory
+.RData
+.ipynb_checkpoints/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
