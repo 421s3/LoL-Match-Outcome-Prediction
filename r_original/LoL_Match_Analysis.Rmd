@@ -1,0 +1,255 @@
+---
+title: "LoL Match Analysis"
+author: "Xayden Kamei"
+date: "2026-03-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+# Introduction
+League of Legends (LoL) is a multiplayer online battle arena (MOBA) game where two teams of five players compete in order to destroy the enemy team's Nexus. This project and analysis goes over LoL match data to analyze which in-game data, statistics, and objectives are the strongest indicators of predicting match outcomes, and whether the blue side holds a meaningful win rate advantage across ranks.
+
+## Dataset
+The data set used consists of six relational tables sourced from Kaggle containing around 279,000 matches across all ranked tiers. The data set was then filtered to be 110,521 matches after filtering out game matches that lasted less than 15 minutes. The most important key variables from this data set are team kills, towers destroyed, dragon kills, Baron Nashor kills, and rift herald kills, in addition to the match rank and duration.
+
+## Project Questions
+1. Does blue side hold a meaningful win rate advantage across all ranks?
+2. Which objectives are the strongest predictors of the match outcomes?
+3. Can a model be used to accurately predict game outcomes from end-of-game data?
+
+# Data Wrangling, Munging, and Cleaning
+
+## Importing Libraries and Loading Data
+
+```{r load-data}
+library(tidyverse)
+library(corrplot)
+library(car)
+#the CSV files are expected in the data/ folder one level up (see data/README.md)
+
+#create tables from csv
+match_tbl <- read_csv("../data/MatchTbl.csv")
+team_tbl <- read_csv("../data/TeamMatchTbl.csv")
+rank_tbl <- read_csv("../data/RankTbl.csv")
+
+```
+The dataset contains six tables each linked by ID columns and values. Only three of the tables from the dataset were used for this project: MatchTbl, TeamMatchTbl, and RankTbl. MatchTbl included general infromation of the match including the patch, what type of game was being played and queued, the rank of the match, and the duration of the match. TeamMatchTbl included information about team statistics including information about objectives taken and the match outcomes. Finally, RankTbl included the rank ID information that linked rank IDs to rank names.
+
+
+
+```{r join-data}
+#use left join in order to keep all rows from match table and add rank from rank table
+rankedMatches <- match_tbl |>
+  left_join(rank_tbl, by = c("RankFk" = "RankId"))
+
+#use inner join to omit matches without match data
+LoLData <- rankedMatches |>
+  inner_join(team_tbl, by = c("MatchId" = "MatchFk")) |>
+  filter(QueueType == "CLASSIC")|>
+  filter(RankName != "Unranked")
+```
+For this project and analysis we only want games that have complete match statistics, and games that were queued and played as ranked matches (which also means that the QueueType would be "classic" because ranked matches are only classic). This removes all other game modes such as ARAM, CHERRY, SWIFTPLAY, and URF which all follow different rules and objectives which would muddle our data analysis. Unranked games were removed so that this project could focus on the analysis of ranked matches and compare the match statistics across ranks.
+
+
+
+```{r clean-data, fig.width=8, fig.height=5}
+#editing LoLData/cleaning it so that we use Blue Side data for model
+
+LoLData <- LoLData |>
+  mutate(
+    GameDuration = GameDuration/60,
+    
+    #subtract blue from red to get either positive or negative difference
+    KillDiff = BlueKills - RedKills,
+    DragonDiff = BlueDragonKills - RedDragonKills,
+    BaronDiff = BlueBaronKills - RedBaronKills,
+    TowerDiff = BlueTowerKills - RedTowerKills,
+    HeraldDiff = BlueRiftHeraldKills - RedRiftHeraldKills,
+    
+    BlueWinFactor = factor(BlueWin, levels = c(0,1), labels =c("Red Win", "Blue Win")),
+    
+    
+    RankName = factor(RankName, levels = c(
+      "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
+      "Master", "Grandmaster", "Challenger"
+    ))
+  ) |>
+  filter(GameDuration >=15)
+```
+
+## Filtering Short Games
+Games shorter than 15 minutes were cut out because these represent match and game "remakes." Remakes are when games end earlier, almost always before the 15 minute mark, either because of cheating, if one or more players are disconnected from the game, or if there is an AFK player in which the player is not disconnected but not participating detected when there is no input from the player side for a period of time. After all filtering 110,521 matches remained with an almost equal split between Blue and Red wins; 55,194 and 55,327 wins respectively. 
+
+# Exploratory Data Analsyis (EDA)
+The first question is about whether blue side holds an advantage over red side in games resulting in a higher win rate. In LoL blue side is able to pick their champions before red side, and red side has last pick.
+```{r win-rate_by_rank, fig.width=8, fig.height=5}
+#WR is Win rate
+win_by_rank <- LoLData |>
+  group_by(RankName) |>
+  summarise(
+    TotalGames = n(),
+    BlueWins = sum(BlueWin),
+    WR = (BlueWins/TotalGames) * 100
+  )
+print(win_by_rank)
+
+WinRatePlot = ggplot(win_by_rank, aes(x = RankName, y = WR, fill = RankName)) +
+  geom_col() +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "black") +
+  labs(
+    title = "Blue Side Win Rate by Rank",
+    x = "Rank",
+    y = "Win Rate(%)",
+    caption = "Dashed line is 50% baseline"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+print(WinRatePlot)
+```
+WR hovers around 50% across all ranks for both blue and red side. For blue side specifically, this ranges from 47.5% in Iron to 53.1% in Challenger. At Master and above, blue has a slight advantage (51.2% - 53.1%) suggesting that high elo players are able to take more advantage of the draft priority form blue side. At the same time it is important to note that at Challenger ( the top rank) results may not be the best example as the sample size is only 433 games compared to +29,000 Master games and thus should be interpreted with caution. In conclusion, blue side does not hold a meaningful advantage in almost all ranked tiers.
+
+
+## Game Duration
+```{r game-duration, fig.width=8, fig.height=5}
+GameDurationPlot <- ggplot(LoLData, aes(x = GameDuration)) +
+  geom_histogram(binwidth = 2, fill = "navyblue", color = "white") +
+  geom_vline(xintercept = median(LoLData$GameDuration),
+             linetype = "dashed", color = "red") +
+  labs(
+    title = "Distribution of Game Duration",
+    x = "Game Duration (in Minutes)",
+    y = "Number of Games",
+    caption = "Dashed line = median game duration"
+  ) +
+  theme_minimal()
+summary(LoLData$GameDuration)
+print(GameDurationPlot)
+```
+
+## Interpretation
+Game duration is a right-skewed distribution with a median of approximately 29 minutes. The plot shows a spike in number of games ending between 15-20 minutes. This mostly represents games that end in surrenders as 15 minutes marks the first normal surrender vote window with 20 minutes being the second choice if the votes at 15 minutes failed to go through. the right tail extends to nearly 70 minutes, which should be considered outliers as they represent very rare prolonged matches.
+
+## Objective Differences
+
+```{r objective-boxplot, fig.width=9, fig.height=6}
+
+objectiveLong <- LoLData |>
+  select(BlueWinFactor, KillDiff, DragonDiff, TowerDiff, BaronDiff, HeraldDiff) |>
+           pivot_longer(
+             cols = c(KillDiff, DragonDiff, TowerDiff, BaronDiff, HeraldDiff),
+             names_to = "Objective",
+             values_to = "Difference"
+           )
+
+boxPlotDiff <- ggplot(objectiveLong, aes(x = Objective, y = Difference, fill = BlueWinFactor)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    title = "Objective Difference by Match Outcome",
+    x = "Objective",
+    y = "Difference",
+    fill = "Outcome",
+    caption = "Blue (+), Red(-)"
+  ) +
+  theme_minimal()
+print(boxPlotDiff)
+```
+
+## Interpretation
+Kill and tower differences are the strongest predictors between winning and losing games. Blue wins are associated with positive differences, and red wins are associated with negative differences. Dragon differences are the next strongest predictors having a moderate, meaningful impact on game outcomes. Lastly, Baron Nashor and Rift Herald differences are weak predictors in game match outcomes.
+
+
+## Correlation Matrix
+```{r correlation-heatmap, fig.width=8, fig.height=6}
+corr_data <- LoLData |>
+  select(BlueWin, KillDiff, DragonDiff, TowerDiff, BaronDiff, HeraldDiff, GameDuration)
+
+corrMatrix <- cor(corr_data)
+
+corrplot(corrMatrix,
+         method = "color",
+         type = "upper",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         title = "Correlation Matrix of Match Variables",
+         mar = c(0,0,1,0))
+
+```
+
+## Interpretation
+From the correlation matrix and plot, tower difference and kill difference are against he strongest match predictors with a correlation of 0.87 and 0.84 respectively. Dragon, Baron Nashor, and Rift Herald differences also follow what the previous box plot showed with 0.65, 0.52, and 0.34 respectively. Game duration has almost no correlation with match outcomes. 
+
+# Logistic Regression Model
+Lol match outcome is basically a binary variable as either a team wins or loses. Using a logistic regression model models the probability of an outcome between 0 and 1, which works nicely with the project question and analysis. 
+
+## Multicollinearity
+First we check for multicollinearity which represents an correlation between the variables and tells us if we need to drop any of the variables.
+
+```{r vif}
+LoLModel <- glm(BlueWin ~ KillDiff + DragonDiff + TowerDiff + 
+                  BaronDiff + HeraldDiff + GameDuration, 
+                data = LoLData,  family = binomial)
+
+vif(LoLModel)
+```
+
+## Interpretation
+Before running the model, VIF (Variance Inflation Factor) scores were checked to check for the mutlicollinerarity. Even though it looked like there would be correlation between variables from the correlation matrix, the VIF scores all came below 1.2 which makes them acceptable as they have minimal correlation between each other. Thus all variables contribute independent information to the model so all variables can be used in the final model.
+
+## Model Results
+```{r model}
+summary(LoLModel)
+```
+
+## Interpretation
+
+The model shows that 5 of the 6 predictors for match outcome are statistically significant. Only game duration is not significant with Pr(>|x|) = 0.731 making it unreliable. Tower difference had the largest positive coefficient (0.812), making it the strongest predictor of match outcomes. Kill difference, Baron Nashor difference and Dragon difference, 0.19, 0.21, 0.15 respectively, are the other predictors that show have positive associations with victories. Rift Herald difference, surprisingly, has a negative association with victories. This can be explained as teams who are losing prioritize Rift Herald in an attempt to keep up or catch up with the opposing team while winning teams prioritize towers and dragons instead. Lastly, the intercept is considered not statistically significant (Pr = 0.527) which confirms there is no meaningful blue side advantage.
+
+## Model Accuracy
+```{r modelacc}
+LoLPredictions <- predict(LoLModel, type ="response")
+LoLPredicted <- ifelse(LoLPredictions > 0.5, 1,0)
+confMatrix <- table(Predicted = LoLPredicted, Actual = LoLData$BlueWin)
+print(confMatrix)
+
+accuracy <- sum(diag(confMatrix)) / sum(confMatrix) *100
+sensitivity <- confMatrix[2,2] / (confMatrix[2,2] + confMatrix[1,2]) * 100
+speci <- confMatrix[1,1] / (confMatrix[1,1] + confMatrix[2,1]) *100
+
+print(paste("Accuracy:", round(accuracy, 2), "%"))
+print(paste("Sensitivity:", round(sensitivity, 2), "%"))
+print(paste("Specificity:", round(speci, 2), "%"))
+```
+
+## Interpretation
+
+The model has an overall 97.6% accuracy with a sensitivity of 97.59% and a specificity of 97.61%. These figures are measured on the same games the model was fit to (no train/test split). The Python version of this project repeats the analysis with a held-out 20% test set and gets 97.63% accuracy. This indicates that the model predicts match outcomes nearly equally well whether considering the statistics for Blue side or Red side. The confusion matrix shows only 2,652 games out of 110,521 games were misclassified with 1,328 false negatives and the rest false positives. 
+
+
+# Conclusion, Key Findings, and Limiations
+
+This project answers the three questions asked earlier:
+1. Does blue side hold a meaningful win rate advantage across all ranks?
+2. Which objectives are the strongest predictors of the match outcomes?
+3. Can a model be used to accurately predict game outcomes from end-of-game data?
+
+## Question 1
+The project finds that blue side does not have a meaningful win rate advantage across most ranks. As shown earlier, win rates always hover around 50% from Iron to Diamond. It is only at Master and above that blue side shows a slight advantage with win rates ranging from 51.2% - 53.1% from Master to Challenger. 
+
+## Question 2
+The strongest predictor of match out come is Towers, with kills being a very close second with both objectives having a 0.87 and 0.84 correlation respectively. Dragons also showed a respectable prediction value of 0.65 while Baron Nashor and Rift Herald showed weaker predictive values. Game duration has no correlation, or very minimal correlation, to match outcomes.
+
+## Question 3
+The logistic regression model achieved a high 97.6 accuracy and similarly high scores in sensitivity and specificity at 97.59% and 97.61% respectively with the model able to correctly predict 107869 match out comes out of 110,521 matches. 
+
+For question 3 in particular, there is a major limitation of this analysis as it uses end-of-game stats as predictors for the model. Kills and towers are natural accumulated throughout the game and are directly correlated with the match outcome. So the accuracy of the model (97.6%) make sense as the model is just confirming the match outcome based on end-of-match stats. A better analysis would be conducted on a model that uses early-game statistics around the 10 and 15 minute marks which this project cuts out in the beginning to omit any early surrender matches.
+
+
+# Dataset Citation
+Nathan Smallcalder. "League of Legends(LoL) Matches Patch 25.19+" Kaggle, 2026,
+https://www.kaggle.com/datasets/nathansmallcalder/lol-match-history-and-summoner-data-80k-matches/data
