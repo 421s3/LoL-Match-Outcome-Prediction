@@ -2,7 +2,7 @@
 
 Logistic regression on 110,521 ranked League of Legends matches: which objectives predict wins, and does that change by rank or game length? Built in Python (main analysis), with the original analysis in R.
 
-Author: Xayden Kamei ([@421s3](https://github.com/421s3)). Built as a course project at Arizona State University (DAT 301).
+Author: Xayden Kamei ([@421s3](https://github.com/421s3)).
 
 ## Read this first: what the 97.6% accuracy means
 
